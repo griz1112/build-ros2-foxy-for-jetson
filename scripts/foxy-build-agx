@@ -1,0 +1,201 @@
+#!/bin/bash
+
+# Copyright (C) 2021, Dan Pollock <griz11@twc.com>
+# All rights reserved
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+# 1. Redistributions of source code must retain the above copyright 
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the copyright holder nor the names of its 
+#    contributors may be used to endorse or promote products derived 
+#    from this software without specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND 
+# CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, 
+# BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS 
+# FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+# HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
+# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; 
+# OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, 
+# WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE 
+# OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, 
+# EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# Build ROS2 foxy on jetson L4t 18.04 Ubuntu
+# Mostly from Dusty-NV's foxy Dockerfile with additions to build the desktop version
+
+mkdir -p $HOME/ros_ws/src
+cd $HOME/ros_ws
+
+# add the ROS deb repo to the apt sources list
+apt update 
+apt install -y --no-install-recommends curl wget gnupg2 lsb-release ca-certificates
+
+curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+# install development packages
+
+apt update && \
+apt install -y build-essential \
+    cmake \
+    git \
+    libbullet-dev \
+    libpython3-dev \
+    python3-colcon-common-extensions \
+    python3-rosdistro \
+    python3-rospkg \
+    python3-rosdep-modules \
+    python3-catkin-pkg \
+    python3-flake8 \
+    python3-pip \
+    python3-pytest-cov \
+    python3-rosdep \
+    python3-setuptools \
+    python3-vcstool \
+    python3-rosinstall-generator \
+    libasio-dev \
+    libtinyxml2-dev \
+    libcunit1-dev \
+    libpcl-dev \
+    libfreetype6-dev \
+    libfreetype \
+    libboost-python-dev \
+    qt5-default \
+    ogre-1.9-tools \
+    libxaw 
+
+# install some pip packages needed for testing
+
+python3 -m pip install -U \
+    argcomplete \
+    flake8-blind-except \
+    flake8-builtins \
+    flake8-class-newline \
+    flake8-comprehensions \
+    flake8-deprecated \
+    flake8-docstrings \
+    flake8-import-order \
+    flake8-quotes \
+    pytest-repeat \
+    pytest-rerunfailures \
+    pytest \
+    lark
+  
+# Build PyQt5 and PyQt5-sip from source to fix qt_gui_cpp build issue
+# https://github.com/ros2/ros2/issues/623
+  
+python3 -m pip uninstall PyQt5
+python3 -m pip install protobuf==3.3.0
+
+wget https://sourceforge.net/projects/pyqt/files/sip/sip-4.19.13/sip-4.19.13.tar.gz
+wget https://sourceforge.net/projects/pyqt/files/PyQt5/PyQt-5.11.3/PyQt5_gpl-5.11.3.tar.gz
+
+tar xzf sip-4.19.13.tar.gz
+cd sip-4.19.13
+python3 ./configure.py
+make -j7
+make install
+
+cd $HOME/ros_ws
+tar xzf PyQt5_gpl-5.11.3.tar.gz
+cd PyQt5_gpl-5.11.3
+python3 ./configure.py --sip /usr/bin/sip
+make -j7
+make install
+cd $HOME/ros_ws
+
+# compile yaml-cpp-0.6, which some ROS packages may use (but is not in the 18.04 apt repo)
+git clone --branch yaml-cpp-0.6.0 https://github.com/jbeder/yaml-cpp yaml-cpp-0.6 && \
+    cd yaml-cpp-0.6 && \
+    mkdir build && \
+    cd build && \
+    cmake -DBUILD_SHARED_LIBS=ON .. && \
+    make -j7 && \
+    sudo cp libyaml-cpp.so.0.6.0 /usr/lib/aarch64-linux-gnu/ && \
+    sudo ln -s /usr/lib/aarch64-linux-gnu/libyaml-cpp.so.0.6.0 /usr/lib/aarch64-linux-gnu/libyaml-cpp.so.0.6 
+ 
+# add this to make sdl_vendor build properly
+   
+wget https://www.libsdl.org/release/SDL2-2.0.12.tar.gz
+sed -i 's/ros_env_setup="\/opt\/ros\/$ROS_DISTRO\/setup.bash"/ros_env_setup="${ROS_ROOT}\/# install\/setup.bash"/g' \
+#    /ros_entrypoint.sh && \
+#    cat /ros_entrypoint.sh
+tar xf SDL2-2.0.12.tar.gz
+cd SDL2-2.0.12 
+./autogen.sh
+./configure
+make -j7
+make install
+ldconfig
+
+# build libhargbuzz from source to get around undefined symbol error
+# https://github.com/kovidgoyal/kitty/issues/992
+
+git clone https://github.com/harfbuzz/harfbuzz.git
+cd harfbuzz
+./autogen.sh
+./configure
+make -j7
+cp ./src/.libs/libharfbuzz.so /usr/lib/aarch64-linux-gnu/libharfbuzz.so
+ldconfig
+
+# https://answers.ros.org/question/325245/minimal-ros2-installation/?answer=325249#post-id-325249
+
+cd ~/ros_ws && \
+    rosinstall_generator --deps --rosdistro foxy desktop launch_xml launch_yaml example_interfaces > ros2.foxy.desktop.rosinstall && \
+    vcs import src < ros2.foxy.desktop.rosinstall
+    
+rm ~/ros_ws/src/libyaml_vendor/CMakeLists.txt && \
+wget --no-check-certificate https://raw.githubusercontent.com/ros2/libyaml_vendor/master/CMakeLists.txt -P ~/ros_ws/src/libyaml_vendor/  
+
+# build numpy from source to fix faulty NumPy faulty build on Xavier
+# github.com/NVIDIA/DALI/pull/2596
+
+python3 -m pip uninstall numpy 
+
+cd $HOME/ros_ws
+git clone https://github.com/numpy/numpy/tree/maintenance/1.19.x
+cd ./numpy-maintenance-1.19.x
+python3 -m pip install .
+cd $HOME/ros_ws
+
+# download unreleased packages
+
+git clone --branch ros2 https://github.com/Kukanani/vision_msgs ~/ros_ws/src/vision_msgs && \
+git clone --branch ${ROS_DISTRO} https://github.com/ros2/demos demos && \
+    cp -r demos/demo_nodes_cpp ~/ros_ws/src && \
+    cp -r demos/demo_nodes_py ~/ros_ws/src && 
+
+# install additional ros packages
+
+cd $HOME/ros_ws
+git clone --branch ros2 https://github.com/ros/xacro.git src/xacro && \
+git clone --branch foxy-devel https://github.com/ros/urdf_parser_py.git src/urdf_parser_py && \
+git clone --branch foxy https://github.com/ros/joint_state_publisher.git src/joint_state_publisher && \
+
+# install dependencies using rosdep
+
+apt update && \
+    cd ~/ros_ws && \
+rosdep init && \
+     rosdep update && \
+     rosdep fix-permissions && \
+     rosdep install --from-paths src --ignore-src --rosdistro foxy -y --skip-keys "console_bridge fastcdr fastrtps rti-connext-dds-5.3.1 urdfdom_headers qt_gui" && \
+    rosdep install --from-paths src --ignore-src --rosdistro foxy -y --skip-keys "" 
+
+# build it!
+
+cd ~/ros_ws && colcon build --symlink-install --parallel-workers 6
+
+#Source $HOME/ros_ws/install/setup.bash and you are ready to use ros2 foxy
+
+
+
+
+ 

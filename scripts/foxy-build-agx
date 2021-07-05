@@ -66,6 +66,7 @@ apt install -y build-essential \
     libfreetype6-dev \
     libboost-python-dev \
     qt5-default \
+    ogre-1.9-tools
 
 # install some pip packages needed for testing
 
